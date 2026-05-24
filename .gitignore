@@ -1,0 +1,21 @@
+# don't litter the place with file manager metadata
+.DS_Store
+.fseventsd/
+
+# editor configs are irrelevant in general
+.vscode/
+.idea/
+*.sublime-*
+*.vim
+*.vimrc
+*.sw?
+
+# python artifacts are almost always from source, so we deduplicate
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# private implementation and data for my buddy, keep out!!
+*mist*
+*Mist*
