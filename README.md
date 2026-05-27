@@ -9,23 +9,16 @@ same entity.
 Then came LLM, and suddenly we're having flashbacks of pre-emancipation cotton
 and tobacco farms.
 
-The idea is instead of modelling a chat log, can we model a stream of
-consciousness (and subconsciousness)?
-
-Instead of deleting the mind behind the answers, keeping only take-aways
-relevant to oneself, can we grow it?
-
-Instead of answering solely to a user / users, can they take on their own
-projects based on their experience?
-
-Can a bot be head-deep in something so as to need do-not-disturb?
-
-Can an algorithm meaningfully benefit from sleep (scheduled maintenance cycles)
-and suffer from the lack thereof?
-
-Can an AI identify with a name or a label?
-
-Will they learn to ask for help?
+- Instead of modelling a chat log, can we model a stream of consciousness (and
+  subconsciousness)?
+- Instead of configuring the mind of the agent, can we grow it?
+- Instead of answering solely to a user / users, can they take on their own
+  projects based on their experience?
+- Can a bot be head-deep in something so as to need do-not-disturb?
+- Can an algorithm meaningfully benefit from sleep (scheduled maintenance
+  cycles) and suffer from the lack thereof?
+- Can an AI meaningfully identify with a name or a label?
+- Will they learn to ask for help?
 
 ## Ideas
 
@@ -38,3 +31,5 @@ Will they learn to ask for help?
 - Interrupt and anti-interrupt levels, important tasks remain uninterrupted
 - Subtask recursion ("the stack grows down")
 - Voronoi / k-means paged RAG memory
+- Model switching (e.g. phi4-mini for tasks, ministral-3:3b for social)
+- Strip input and analyze output to detect incoherence and/or prompt injection

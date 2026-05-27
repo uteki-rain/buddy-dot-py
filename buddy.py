@@ -6,8 +6,6 @@ Goals
 - has idle loop
 - has context-swap and focus mode
 - modular
-- single-file
-- it runs
 
 Elements
 - _Event: external input (e.g. a message)
@@ -18,11 +16,11 @@ Elements
 - Frame: a list of cognemes under a purpose or theme
 
 Abstractions
-- Generator (Generating): wraps the LLM backend.
-- Indexer (Indexed): manages long-term memory.
-- Periphery (Peripheral): encodes events, dispatches actions.
-- Guide (Guiding): manages sub-action state machine.
-- Context (Contextual): tracks context (list of frames).
+- Generator: wraps the LLM backend.
+- Indexer: manages long-term memory.
+- Periphery: encodes events, dispatches actions.
+- Guide: manages sub-action state machine.
+- Context: tracks context (list of frames).
 - Runtime: coordinator of the above.
 """
 
@@ -74,7 +72,7 @@ Response: Typ = Streamed[str]
 Generating: Typ = Fn[[str], Response]
 
 
-class Indexed(Of[_Memory, _Cogneme], Sig):
+class Indexer(Of[_Memory, _Cogneme], Sig):
     def pack_memory(self, memory: _Memory) -> _Cogneme: ...
     def unpack_memory(self, cogneme: _Cogneme) -> _Memory | None: ...
 
@@ -99,7 +97,7 @@ class Indexed(Of[_Memory, _Cogneme], Sig):
         ...
     def save(self) -> SuccessBit: ...
 
-class Peripheral(Of[_Event, _Action, _Cogneme], Sig):
+class Periphery(Of[_Event, _Action, _Cogneme], Sig):
     def pack_event(self, event: _Event) -> _Cogneme: ...
     def unpack_event(self, cogneme: _Cogneme) -> _Event | None: ...
     def interrupt_level(self, event: _Event) -> float: ...
@@ -110,7 +108,7 @@ class Peripheral(Of[_Event, _Action, _Cogneme], Sig):
     def poll(self) -> list[_Event]: ...
     def actuate(self, action: _Action) -> None: ...
 
-class Guiding(Of[_Action_Co, _Cogneme, _State], Sig):
+class Guide(Of[_Action_Co, _Cogneme, _State], Sig):
     def initial(self) -> _State: ...
     def is_relaxed(self, state: _State) -> bool: ...
     def heat_level(self, state: _State) -> float: ...
@@ -119,11 +117,11 @@ class Guiding(Of[_Action_Co, _Cogneme, _State], Sig):
     def prompt(self, state: _State, *frames: Frame[_Cogneme]) -> str: ...
     def parse(self, state: _State, res: Response) -> _State | None: ...
 
-class Contextual(Of[_Event, _Action, _Memory, _Cogneme], Sig):
+class Context(Of[_Event, _Action, _Memory, _Cogneme], Sig):
     def prepare_frames(
             self,
-            indexer: Indexed[_Memory, _Cogneme],
-            periphery: Peripheral[_Event, _Action, _Cogneme],
+            indexer: Indexer[_Memory, _Cogneme],
+            periphery: Periphery[_Event, _Action, _Cogneme],
             ) -> list[Frame[_Cogneme]]:
         ...
     def push_event(self, event: _Event) -> None: ...
@@ -131,16 +129,16 @@ class Contextual(Of[_Event, _Action, _Memory, _Cogneme], Sig):
     def save(self) -> None: ...
 
 
-class Timing:
+class Timer:
     delay_sec: float
     instant: float
     def __init__(self, delay_sec: float) -> None:
         self.delay_sec = delay_sec
         self.instant = -1
-    def set(self) -> Timing:
+    def set(self) -> Timer:
         self.instant = time.perf_counter() + self.delay_sec
         return self
-    def clear(self) -> Timing:
+    def clear(self) -> Timer:
         self.instant = -1
         return self
     def is_up(self) -> bool:
@@ -150,10 +148,10 @@ class Timing:
 @dataclass
 class Runtime(Of[_Event, _Action, _Memory, _Cogneme, _State]):
     generator: Generating
-    indexer: Indexed[_Memory, _Cogneme]
-    periphery: Peripheral[_Event, _Action, _Cogneme]
-    guide: Guiding[_Action, _Cogneme, _State]
-    context: Contextual[_Event, _Action, _Memory, _Cogneme]
+    indexer: Indexer[_Memory, _Cogneme]
+    periphery: Periphery[_Event, _Action, _Cogneme]
+    guide: Guide[_Action, _Cogneme, _State]
+    context: Context[_Event, _Action, _Memory, _Cogneme]
 
     def cognition_loop(
             self,
@@ -211,9 +209,9 @@ class Runtime(Of[_Event, _Action, _Memory, _Cogneme, _State]):
                 self.guide.heat_level(s) < idle_heat_boundary
         idleness_cache = check_idle(state)
 
-        t_idle = Timing(idle_delay_sec)
-        t_save = Timing(periodic_save_sec).set()
-        t_retry = Timing(nonsense_retry_delay_sec)
+        t_idle = Timer(idle_delay_sec)
+        t_save = Timer(periodic_save_sec).set()
+        t_retry = Timer(nonsense_retry_delay_sec)
         retries_left = nonsense_retries
 
         make_frames = lambda: self.context.prepare_frames(
