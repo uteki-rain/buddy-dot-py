@@ -186,15 +186,16 @@ class LoadsCluster(Of[_H], Sig):
         """
         ...
 
-def entropic_filter(
+def threshold(
         scores: list[tuple[_H, float, float]], *,
         beta: float,
-        sigma: float,
-        mode: Lit["l2sq", "cosine"],
+        theta: float,
+        scoring: Lit["l2sq", "cosine"],
+        summing: Lit["prob", "entr"],
         ) -> list[tuple[_H, float, float]]:
     """ Given IDs, scores, and weights; apply soft clustering to find the least
     amount of most relevant points to account for a minimum threshold of total
-    entropy.
+    probability/entropy.
 
     - Dot product to distance: (x-q)² = x² + q² - 2x⋅q
     - Cosine to distance (normalized vecs): (x-q)² = 2 - 2cos(x,q)
@@ -203,21 +204,23 @@ def entropic_filter(
     - Weighing: we try to make weight w behave like w points of weight 1
     - W-Soft clustering: p = w exp(-β(x-q)²) / Z
     - W-Entropy: S[j] = sum[i,0≤i<j] p[i]( -ln(p[i] / w[i]) )
-    - Filtering: least j for which S[j]/S ≥ σ
+    - Filtering for probability: least j for which sum[i,0≤i<j] p[i] ≥ θ
+    - Filtering for entropy: least j for which S[j]/S ≥ θ
 
     I have no proof for why this should work. Just a hunch.
     """
-    assert 0 <= sigma <= 1
-    scores = sorted(scores, key=lambda t: t[1], reverse=(mode == "cosine"))
-    match mode:
+    assert 0 <= theta <= 1
+    scores = sorted(scores, key=lambda t: t[1], reverse=(scoring == "cosine"))
+    match scoring:
         case "l2sq":
             l2sq = np.array([s for _, s, _ in scores])
         case "cosine":
             l2sq = np.array([2 - 2 * s for _, s, _ in scores])
     w = np.array([w for _, _, w in scores])
-    p = w * np.exp(-beta * l2sq); p /= p.sum()
-    s = p * np.log(w / p); s /= s.sum()
-    S = s.cumsum()
+    h = w * np.exp(-beta * l2sq); h /= h.sum()
+    if summing == "entr":
+        h = h * np.log(w / h); h /= h.sum()
+    H = h.cumsum()
     ix = np.arange(len(scores))
-    j = ix[S >= sigma][0]
+    j = ix[H >= theta][0]
     return scores[:j + 1]
