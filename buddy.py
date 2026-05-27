@@ -16,7 +16,7 @@ Elements
 - Frame: a list of cognemes under a purpose or theme
 
 Abstractions
-- Generator: wraps the LLM backend.
+- Responder: wraps the LLM backend.
 - Indexer: manages long-term memory.
 - Periphery: encodes events, dispatches actions.
 - Guide: manages sub-action state machine.
@@ -69,7 +69,7 @@ class Streamed(Of[_T], Sig):
     def is_closed(self) -> bool: ...
 
 Response: Typ = Streamed[str]
-Generating: Typ = Fn[[str], Response]
+Responder: Typ = Fn[[str], Response]
 
 
 class Indexer(Of[_Memory, _Cogneme], Sig):
@@ -147,7 +147,7 @@ class Timer:
 
 @dataclass
 class Runtime(Of[_Event, _Action, _Memory, _Cogneme, _State]):
-    generator: Generating
+    responder: Responder
     indexer: Indexer[_Memory, _Cogneme]
     periphery: Periphery[_Event, _Action, _Cogneme]
     guide: Guide[_Action, _Cogneme, _State]
@@ -249,7 +249,7 @@ class Runtime(Of[_Event, _Action, _Memory, _Cogneme, _State]):
                     current_frames = make_frames()
                     frames_need_refresh = False
                 prompt = self.guide.prompt(state, *current_frames)
-                response = self.generator(prompt)
+                response = self.responder(prompt)
                 new_state = self.guide.parse(state, response)
                 if new_state is None:
                     t_retry.set()
@@ -300,20 +300,20 @@ import requests
 from numpy.typing import NDArray
 
 @dataclass
-class OllamaServiceGenerator:
+class OllamaResponder:
     url: str
     model: str
     raw: bool
-    def __call__(self, prompt: str) -> OllamaGeneratorResponse:
+    def __call__(self, prompt: str) -> OllamaResponse:
         r = requests.post(self.url, stream=True, json={
             "model": self.model,
             "prompt": prompt,
             "stream": True,
             "raw": self.raw,
         })
-        return OllamaGeneratorResponse(r)
+        return OllamaResponse(r)
 
-class OllamaGeneratorResponse:
+class OllamaResponse:
     r: requests.Response | None
     lines: Iterator[bytes]
     def __init__(self, r: requests.Response) -> None:
@@ -336,7 +336,7 @@ class OllamaGeneratorResponse:
         return self.r is None
 
 @dataclass
-class OllamaServiceEmbedder:
+class OllamaEmbedder:
     url: str
     model: str
     def __call__(self, text: str) -> NDArray[np.float16]:
