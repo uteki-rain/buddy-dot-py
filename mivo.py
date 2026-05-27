@@ -25,6 +25,8 @@ TagStr: Typ = str
 ArrF16: Typ = NDArray[np.float16]
 
 _H = Tyvar('_H', bound=Hashable)
+_H_Con = Tyvar('_H_Con', bound=Hashable, contravariant=True)
+_X = Tyvar('_X')
 
 @dataclass
 class Cluster(Of[_H]):
@@ -55,13 +57,28 @@ class Cluster(Of[_H]):
         self.row_wgt = self.row_wgt.new_like([w[ne]])
         self.dirty = True
 
+    def center(
+            self, *,
+            assume_compact: bool=False,
+            spherical: bool=False,
+            ) -> ArrF16:
+        if not assume_compact:
+            self.compact()
+        assert len(self) >= 1
+        X = self.row_vec.frames[0]; w = self.row_wgt.frames[0]
+        col = lambda v: v[:, None]
+        c = (X * col(w)).sum(axis=0)
+        return (c / np.linalg.norm(c)) if spherical else (c / w.sum())
+
     def mitosis(
             self, *,
+            assume_compact: bool=False,
             spherical: bool=False,
             ) -> tuple[Cluster[_H], Cluster[_H]]:
 
         # check that the cluster can be split
-        self.compact()
+        if not assume_compact:
+            self.compact()
         assert len(self) >= 2
         X = self.row_vec.frames[0]; w = self.row_wgt.frames[0]
         row = lambda v: v[None, :]
@@ -172,40 +189,25 @@ class Cluster(Of[_H]):
                 if w != 0: scores.append((i, s, w))
         return scores
 
-class LoadsCluster(Of[_H], Sig):
-    @property
-    def cluster(self) -> Cluster[_H]:
-        """ This can have side-effects such as unloading unused clusters,
-        updating in-memory entries, loading corresponding RAG contents, etc.
-        """
-        ...
-    def save(self, self_id: _H) -> None:
-        """ This should ensure that the corresponding cluster is saved
-        correctly to a persistent storage, provided that the self_id is not in
-        conflict with an existing one.
-        """
-        ...
-
-def threshold(
+def least_sufficient(
         scores: list[tuple[_H, float, float]], *,
         beta: float,
         theta: float,
         scoring: Lit["l2sq", "cosine"],
-        summing: Lit["prob", "entr"],
+        weighing: Lit["pre", "post"],
         ) -> list[tuple[_H, float, float]]:
     """ Given IDs, scores, and weights; apply soft clustering to find the least
     amount of most relevant points to account for a minimum threshold of total
-    probability/entropy.
+    probability.
 
     - Dot product to distance: (x-q)² = x² + q² - 2x⋅q
     - Cosine to distance (normalized vecs): (x-q)² = 2 - 2cos(x,q)
     - Soft clustering: probability of q belonging to x is p = exp(-β(x-q)²)/Z
-    - Entropy: given by S = sum[i] p[i](-ln(p[i]))
     - Weighing: we try to make weight w behave like w points of weight 1
-    - W-Soft clustering: p = w exp(-β(x-q)²) / Z
-    - W-Entropy: S[j] = sum[i,0≤i<j] p[i]( -ln(p[i] / w[i]) )
-    - Filtering for probability: least j for which sum[i,0≤i<j] p[i] ≥ θ
-    - Filtering for entropy: least j for which S[j]/S ≥ θ
+    - pre-W soft clustering: p = w exp(-β(x-q)²) / Z
+    - pre-W filtering: least j for which sum[i,0≤i<j] p[i] ≥ θ
+    - post-W soft clustering: p = exp(-β(x-q)²) / Z
+    - post-W filtering: least j for which sum[i,0≤i<j] w[i] p[i] ≥ θ
 
     I have no proof for why this should work. Just a hunch.
     """
@@ -217,10 +219,103 @@ def threshold(
         case "cosine":
             l2sq = np.array([2 - 2 * s for _, s, _ in scores])
     w = np.array([w for _, _, w in scores])
-    h = w * np.exp(-beta * l2sq); h /= h.sum()
-    if summing == "entr":
-        h = h * np.log(w / h); h /= h.sum()
+    match weighing:
+        case "pre":
+            h = w * np.exp(-beta * l2sq); h /= h.sum()
+        case "post":
+            h = np.exp(-beta * l2sq); h /= h.sum(); h *= w
     H = h.cumsum()
     ix = np.arange(len(scores))
     j = ix[H >= theta][0]
     return scores[:j + 1]
+
+class ClusterLoader(Of[_H], Sig):
+    def __getitem__(self, k: _H) -> Cluster[_H]:
+        """ This can have side-effects such as unloading unused clusters,
+        updating in-memory entries, loading corresponding RAG contents, etc.
+        """
+        ...
+    def __setitem__(self, k: _H, v: Cluster[_H]) -> None:
+        """ This method should not assign-by-reference, and should accept new
+        keys.
+        """
+        ...
+    def __delitem__(self, k: _H) -> None:
+        ...
+
+class MappedLoader(Of[_H_Con, _X], Sig):
+    def __getitem__(self, k: _H_Con) -> _X: ...
+    def __setitem__(self, k: _H_Con, aux: _X) -> None: ...
+    def __delitem__(self, k: _H_Con) -> None: ...
+
+class MiVoStorage(Of[_H, _X], Sig):
+    def depth(self, k: _H) -> int: ...
+    @property
+    def height(self) -> int: ...
+
+    @property
+    def branch(self) -> ClusterLoader[_H]: ...
+    @property
+    def leaf(self) -> MappedLoader[_H, _X]: ...
+    @property
+    def root(self) -> _H: ...
+    @root.setter
+    def set_root(self, root: _H) -> None: ...
+
+    def suggest_id(self) -> _H: ...
+    def save(self) -> None: ...
+
+@dataclass
+class Threshold:
+    weighing: Lit["pre", "post"]
+    theta: float
+
+class Thresholding(Sig):
+    def __call__(
+            self,
+            d0: int, h: int,
+            n: int, N: int, w: float,
+            k: int,
+            ) -> Threshold:
+        """
+        :param d0: zero-indexed depth of node
+        :param h: MiVoTree height
+        :param n: node children count
+        :param N: node leaf count
+        :param w: node weight
+        :param k: number of wanted results
+        :return: threshold to use for query
+        """
+        ...
+
+class Splitting(Sig):
+    def __call__(
+            self,
+            d0: int, h: int,
+            n: int, N: int, w: float,
+            ) -> bool:
+        """
+        :param d0: zero-indexed depth of node
+        :param h: MiVoTree height
+        :param n: node children count
+        :param N: node leaf count
+        :param w: node weight
+        :return: whether to undergo mitosis
+        """
+        ...
+
+@dataclass
+class MiVoTree(Of[_H, _X]):
+    """ The MiVoTree is a perfectly balanced multitree, similar in structural
+    spirit to a 2-3-4-tree; however, it is also a leafy tree, and the branching
+    nodes serve merely as navigational aids. As such, it is expected that all
+    the actual data live on depth (height - 1).
+
+    Tree pruning and shrinking is yet to be designed and implemented.
+    """
+    store: MiVoStorage[_H, _X]
+    beta: float
+    theta: float
+    spherical: bool
+    thresholding: Thresholding
+    splitting: Splitting
