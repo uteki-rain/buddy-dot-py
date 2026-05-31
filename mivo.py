@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import (
     Generic as Of,
     Hashable,
+    Iterable,
     Literal as Lit,
     Protocol as Sig,
     TypeAlias as Typ,
@@ -25,8 +26,26 @@ TagStr: Typ = str
 ArrF16: Typ = NDArray[np.float16]
 
 _H = Tyvar('_H', bound=Hashable)
-_H_Con = Tyvar('_H_Con', bound=Hashable, contravariant=True)
-_X = Tyvar('_X')
+_K = Tyvar('_K')
+_D = Tyvar('_D')
+
+def sed_vec(alpha: float, *frames: ArrF16) -> Sediment[ArrF16]:
+    return Sediment(
+        _size=len,
+        _empty=np.array([], dtype=np.float16),
+        _concat=lambda *a: np.concatenate(a),
+        _alpha=alpha,
+        frames=list(frames),
+    )
+
+def sed_rowmat(alpha: float, *frames: ArrF16) -> Sediment[ArrF16]:
+    return Sediment(
+        _size=lambda a: a.shape[0],
+        _empty=np.array([], dtype=np.float16),
+        _concat=lambda *a: np.concatenate(a, axis=0),
+        _alpha=alpha,
+        frames=list(frames),
+    )
 
 @dataclass
 class Cluster(Of[_H]):
@@ -211,7 +230,7 @@ def least_sufficient(
 
     I have no proof for why this should work. Just a hunch.
     """
-    assert 0 <= theta <= 1
+    if weighing == "pre": assert 0 <= theta <= 1
     scores = sorted(scores, key=lambda t: t[1], reverse=(scoring == "cosine"))
     match scoring:
         case "l2sq":
@@ -226,77 +245,35 @@ def least_sufficient(
             h = np.exp(-beta * l2sq); h /= h.sum(); h *= w
     H = h.cumsum()
     ix = np.arange(len(scores))
-    j = ix[H >= theta][0]
-    return scores[:j + 1]
-
-class ClusterLoader(Of[_H], Sig):
-    def __getitem__(self, k: _H) -> Cluster[_H]:
-        """ This can have side-effects such as unloading unused clusters,
-        updating in-memory entries, loading corresponding RAG contents, etc.
-        """
-        ...
-    def __setitem__(self, k: _H, v: Cluster[_H]) -> None:
-        """ This method should not assign-by-reference, and should accept new
-        keys.
-        """
-        ...
-    def __delitem__(self, k: _H) -> None:
-        ...
-
-class MappedLoader(Of[_H_Con, _X], Sig):
-    def __getitem__(self, k: _H_Con) -> _X: ...
-    def __setitem__(self, k: _H_Con, aux: _X) -> None: ...
-    def __delitem__(self, k: _H_Con) -> None: ...
-
-class MiVoStorage(Of[_H, _X], Sig):
-    def depth(self, k: _H) -> int: ...
-    @property
-    def height(self) -> int: ...
-
-    @property
-    def branch(self) -> ClusterLoader[_H]: ...
-    @property
-    def leaf(self) -> MappedLoader[_H, _X]: ...
-    @property
-    def root(self) -> _H: ...
-    @root.setter
-    def set_root(self, root: _H) -> None: ...
-
-    def suggest_id(self) -> _H: ...
-    def save(self) -> None: ...
+    mask = (H >= theta)
+    if np.any(mask):
+        j = ix[H >= theta][0]
+        return scores[:j + 1]
+    else:
+        return scores
 
 @dataclass
 class Threshold:
     weighing: Lit["pre", "post"]
+    beta: float
     theta: float
 
 class Thresholding(Sig):
-    def __call__(
-            self,
-            d0: int, h: int,
-            n: int, N: int, w: float,
-            k: int,
-            ) -> Threshold:
+    def __call__(self, h: int, n: int, N: int, w: float, m: int) -> Threshold:
         """
-        :param d0: zero-indexed depth of node
-        :param h: MiVoTree height
+        :param h: height of subtree
         :param n: node children count
         :param N: node leaf count
         :param w: node weight
-        :param k: number of wanted results
+        :param m: number of wanted results
         :return: threshold to use for query
         """
         ...
 
 class Splitting(Sig):
-    def __call__(
-            self,
-            d0: int, h: int,
-            n: int, N: int, w: float,
-            ) -> bool:
+    def __call__(self, h: int, n: int, N: int, w: float) -> bool:
         """
-        :param d0: zero-indexed depth of node
-        :param h: MiVoTree height
+        :param h: height of subtree
         :param n: node children count
         :param N: node leaf count
         :param w: node weight
@@ -305,17 +282,155 @@ class Splitting(Sig):
         ...
 
 @dataclass
-class MiVoTree(Of[_H, _X]):
-    """ The MiVoTree is a perfectly balanced multitree, similar in structural
-    spirit to a 2-3-4-tree; however, it is also a leafy tree, and the branching
-    nodes serve merely as navigational aids. As such, it is expected that all
-    the actual data live on depth (height - 1).
+class MiVoNode(Of[_H, _D]):
+    key: _H
+    center: ArrF16
+    height: int
+    parent: _H | None
+    cluster: Cluster[_H] | None
+    data: _D | None
 
-    Tree pruning and shrinking is yet to be designed and implemented.
-    """
-    store: MiVoStorage[_H, _X]
-    beta: float
-    theta: float
-    spherical: bool
+class LruLoader(Of[_K, _D], Sig):
+    @property
+    def numlru(self) -> int: ...
+
+    def __getitem__(self, k: _K) -> _D: ...
+    def __setitem__(self, k: _K, d: _D) -> None: ...
+    def __delitem__(self, k: _K) -> None: ...
+
+    def __contains__(self, k: _K) -> bool: ...
+    def suggest_key(self) -> _K: ...
+
+    def save(self) -> None: ...
+
+class MiVoLoader(Of[_H, _D], LruLoader[_H, MiVoNode[_H, _D]], Sig):
+    @property
+    def root(self) -> _H: ...
+    def set_root(self, root: _H) -> None: ...
+
+    @property
+    def spherical(self) -> bool: ...
+
+    def nleaf(self, key: _H) -> int: ...
+    def weight(self, key: _H) -> int: ...
+
+    def nreads(self, key: _H) -> int: ...
+    def incr_read(self, key: _H) -> None: ...
+    def nwrites(self, key: _H) -> int: ...
+    def incr_write(self, key: _H) -> None: ...
+    def reset_rwcount(self, keys: Iterable[_H]) -> None: ...
+
+@dataclass
+class MiVo(Of[_H, _D]):
+    tree: MiVoLoader[_H, _D]
     thresholding: Thresholding
     splitting: Splitting
+
+    def insert(self, v: ArrF16, d: _D, w: float) -> _H:
+        tree = self.tree
+        k = tree.suggest_key()
+        p = tree.root; chain = [p]
+        spherical = tree.spherical
+        while (node := tree[p]).height > 1:
+            assert node.cluster is not None
+            if spherical:
+                scores = node.cluster.cosine_rank(v, spherical=True)
+                scores = least_sufficient(
+                        scores, beta=1.0, theta=0.0,
+                        scoring="cosine", weighing="pre")
+            else:
+                scores = node.cluster.l2sq_rank(v)
+                scores = least_sufficient(
+                        scores, beta=1.0, theta=0.0,
+                        scoring="l2sq", weighing="pre")
+            p = scores[0][0]
+            chain.append(p)
+        assert node.height == 1
+        assert node.cluster is not None
+        node.cluster.assign(g=k, e=v, w=w, extant=False)
+        node = MiVoNode(
+                key=k, center=v, height=0,
+                parent=p, cluster=None, data=d)
+        tree[k] = node
+        tree.incr_write(k)
+        while chain:
+            node = tree[(p := chain.pop())]
+            assert node.cluster is not None
+            do_split = self.splitting(
+                    h=node.height, n=len(node.cluster), N=tree.nleaf(p),
+                    w=tree.weight(p) )
+            if not do_split: break
+            parent = tree.suggest_key() if p == tree.root else node.parent
+            assert parent is not None, "non-root node is missing parent"
+            c1, c2 = node.cluster.mitosis(spherical=spherical)
+            n1 = MiVoNode(
+                key=p, height=node.height,
+                center=c1.center(assume_compact=True, spherical=spherical),
+                parent=parent, cluster=c1, data=None,
+            )
+            n2 = MiVoNode(
+                key=tree.suggest_key(), height=node.height,
+                center=c2.center(assume_compact=True, spherical=spherical),
+                parent=parent, cluster=c2, data=None,
+            )
+            tree[n1.key] = n1
+            tree[n2.key] = n2
+            if p == tree.root:
+                rc = Cluster(
+                    row_id=BiIndex.from_iter([n1.key, n2.key]),
+                    row_vec=sed_rowmat(
+                            c1.row_vec._alpha,
+                            np.stack([n1.center, n2.center]) ),
+                    row_wgt=sed_vec(
+                            c1.row_wgt._alpha,
+                            np.array([
+                                    tree.weight(n1.key),
+                                    tree.weight(n2.key) ]) ),
+                    dirty=True,
+                )
+                rn = MiVoNode(
+                    key=parent, height=n1.height + 1,
+                    center=rc.center(assume_compact=True, spherical=spherical),
+                    parent=None, cluster=rc, data=None,
+                )
+                tree[rn.key] = rn
+                tree.set_root(rn.key)
+        return k
+
+    def query(self, v: ArrF16, m: int) -> list[tuple[_H, float, float, _D]]:
+        tree = self.tree; thfn = self.thresholding
+        spherical = tree.spherical
+        scores = [(tree.root, 0.0, 0.0)]
+        h = tree[tree.root].height
+        assert h != 0
+        while h != 0:
+            nodes = [tree[k] for k, _, _ in scores]
+            n = 0; N = 0; w = 0
+            scores = []
+            if spherical:
+                for u in nodes:
+                    assert u.height == h and u.cluster is not None
+                    n += len(u.cluster)
+                    N += tree.nleaf(u.key)
+                    w += tree.weight(u.key)
+                    scores.extend(u.cluster.cosine_rank(v, spherical=True))
+            else:
+                for u in nodes:
+                    assert u.height == h and u.cluster is not None
+                    n += len(u.cluster)
+                    N += tree.nleaf(u.key)
+                    w += tree.weight(u.key)
+                    scores.extend(u.cluster.l2sq_rank(v))
+            th = thfn(h=h, n=n, N=N, w=w, m=m)
+            scores = least_sufficient(
+                    scores,
+                    beta=th.beta, theta=th.theta, weighing=th.weighing,
+                    scoring="cosine" if spherical else "l2sq" )
+            h -= 1
+        ret = []
+        for k, rel, wgt in scores:
+            u = tree[k]; assert u.height == 0
+            dat = u.data; assert dat is not None
+            tree.incr_read(k)
+            ret.append((k, rel, wgt, dat))
+        return ret
